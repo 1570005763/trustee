@@ -1,0 +1,220 @@
+name: Build and Release RPM Packages
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  create-build-artifacts:
+    name: Create Build Artifacts
+    runs-on: ubuntu-22.04
+    outputs:
+      build_artifacts_filename: ${{ steps.create-tarball.outputs.build_artifacts_filename }}
+      artifact_subjects: ${{ steps.generate-artifact-hashes.outputs.subjects }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cargo clang libprotobuf-dev protobuf-compiler
+
+      - name: Create build artifacts
+        run: |
+          cd dist
+          make create-build-artifacts
+
+      - name: Create total build artifacts tarball with SHA256 name
+        id: create-tarball
+        run: |
+          cd dist
+          # Create tarball first
+          tar -czf build-artifacts-temp.tar.gz *.tar.gz
+          # Calculate SHA256 hash of the tarball
+          sha256=$(sha256sum build-artifacts-temp.tar.gz | cut -d ' ' -f 1)
+          # Rename tarball with SHA256 hash
+          mv build-artifacts-temp.tar.gz build-artifacts-${sha256}.tar.gz
+          # Output the filename for later steps
+          echo "build_artifacts_filename=build-artifacts-${sha256}.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Generate artifact hashes
+        id: generate-artifact-hashes
+        run: |
+          cd dist
+          # Generate hashes for build artifacts
+          echo "Generating hashes for build artifacts..."
+          echo "Current directory: $(pwd)"
+          echo "Listing build artifacts:"
+          ls -la build-artifacts-*.tar.gz || echo "No build artifacts found"
+          sha256sum build-artifacts-*.tar.gz > artifact-hashes.txt
+          echo "Generated artifact-hashes.txt content:"
+          cat artifact-hashes.txt || echo "artifact-hashes.txt not found or empty"
+          # Output as base64 subjects
+          echo "subjects=$(base64 -w0 < "artifact-hashes.txt")" >> $GITHUB_OUTPUT
+
+      - name: Upload total build artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: dist/build-artifacts-*.tar.gz
+
+  build-rpm:
+    name: Build RPM Package
+    runs-on: ubuntu-22.04
+    needs: [create-build-artifacts]
+    container:
+      image: openanolis/anolisos:23
+      options: --privileged
+    steps:
+      - name: Install dependencies in container
+        run: |
+          dnf install -y gzip tar wget
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts from release
+        env:
+          BUILD_ARTIFACTS_FILENAME: "${{ needs.create-build-artifacts.outputs.build_artifacts_filename }}"
+          TAG_NAME: "${{ github.event.release.tag_name }}"
+        run: |
+          # Download the total build artifacts tarball from the release
+          tag_name=$(echo "$TAG_NAME")
+          build_artifacts_filename=$(echo "$BUILD_ARTIFACTS_FILENAME")
+          wget -O ${build_artifacts_filename} "https://github.com/${{ github.repository }}/releases/download/${tag_name}/${build_artifacts_filename}"
+          # Extract the tarball
+          tar -xzf ${build_artifacts_filename}
+
+      - name: Make build script executable
+        run: |
+          chmod +x rpm/AnolisOS23/build.sh
+
+      - name: Prepare environment variables
+        run: |
+          # Get the tag name from the release
+          tag_name=$(echo $GITHUB_REF | sed 's/refs\/tags\///')
+          echo "tag_name=$tag_name" >> $GITHUB_ENV
+
+      - name: Run RPM build script
+        run: |
+          ./rpm/AnolisOS23/build.sh \
+            --tag-name "${{ env.tag_name }}" \
+            --github-ref "${{ github.ref }}" \
+            --github-repository "${{ github.repository }}"
+
+      - name: Upload RPM packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-packages
+          path: |
+            ~/rpmbuild/SRPMS/*.src.rpm
+            ~/rpmbuild/RPMS/*/*.rpm
+
+  publish-release:
+    name: Publish Release Assets
+    runs-on: ubuntu-22.04
+    needs: [create-build-artifacts, build-rpm]
+    outputs:
+      package_subjects: ${{ steps.generate-hashes.outputs.subjects }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download RPM packages
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-packages
+          path: rpm-packages
+
+      - name: Generate hashes for RPM packages
+        id: generate-hashes
+        run: |
+          # Find RPM files and generate their hashes
+          echo "Generating hashes for RPM files..."
+          echo "Current directory: $(pwd)"
+          echo "Listing rpm-packages directory:"
+          ls -la rpm-packages/ || echo "rpm-packages directory not found"
+          find rpm-packages -name "*.src.rpm" -type f -exec sha256sum {} \; > hashes.txt
+          find rpm-packages -name "*.rpm" -path "*/RPMS/*" -type f -exec sha256sum {} \; >> hashes.txt
+          echo "Generated hashes.txt content:"
+          cat hashes.txt || echo "hashes.txt not found or empty"
+          # output as package subjects
+          echo "subjects=$(base64 -w0 < "hashes.txt")" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            rpm-packages/SRPMS/*.src.rpm
+            rpm-packages/RPMS/*/*.rpm
+
+  combine-subjects:
+    name: Combine Provenance Subjects
+    runs-on: ubuntu-22.04
+    needs: [create-build-artifacts, publish-release]
+    outputs:
+      combined_subjects: ${{ steps.combine.outputs.subjects }}
+    steps:
+      - name: Combine artifact and package subjects
+        id: combine
+        env:
+          ARTIFACT_SUBJECTS: ${{ needs.create-build-artifacts.outputs.artifact_subjects }}
+          PACKAGE_SUBJECTS: ${{ needs.publish-release.outputs.package_subjects }}
+        run: |
+          # Get the base64 encoded subjects from previous jobs
+          artifact_subjects=$(echo "$ARTIFACT_SUBJECTS" | base64 -d)
+          package_subjects=$(echo "$PACKAGE_SUBJECTS" | base64 -d)
+          
+          # Debug: Print the inputs
+          echo "artifact_subjects: $artifact_subjects"
+          echo "package_subjects: $package_subjects"
+          
+          # Check if inputs are empty
+          if [ -z "$artifact_subjects" ]; then
+            echo "WARNING: artifact_subjects is empty"
+          fi
+          if [ -z "$package_subjects" ]; then
+            echo "WARNING: package_subjects is empty"
+          fi
+          
+          # Combine all subjects, removing empty lines
+          all_subjects=$(echo -e "${artifact_subjects}\n${package_subjects}\n" | sed '/^$/d')
+          echo "Combined subjects:"
+          echo "$all_subjects"
+          
+          # Check if combined subjects are empty
+          if [ -z "$all_subjects" ]; then
+            echo "ERROR: No subjects found to combine"
+            exit 1
+          fi
+          
+          # Output the combined subjects as base64 following the requested pattern
+          echo "subjects=$(echo "$all_subjects" | base64 -w0)" >> "$GITHUB_OUTPUT"
+          echo "Final base64 subjects length: ${#all_subjects}"
+
+  provenance:
+    name: Generate SLSA Provenance
+    needs: [combine-subjects]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      compile-generator: false
+      base64-subjects: ${{ needs.combine-subjects.outputs.combined_subjects }}
+      upload-assets: true

@@ -6,6 +6,10 @@ BUILDROOT ?=
 PREFIX ?= /usr
 CONFIG_DIR ?= /etc/trustee
 
+# 获取版本号
+# VERSION ?= $(shell grep "^Version:" ../rpm/AnolisOS23/trustee.spec | awk '{print $$2}')
+VERSION ?= 1.7.0
+
 # 设置默认目标
 .DEFAULT_GOAL := build
 
@@ -17,6 +21,7 @@ help:
 	@echo "  make build-frontend # 编译前端组件"
 	@echo "  make install [BUILDROOT=path] [PREFIX=path] [CONFIG_DIR=path]"
 	@echo "  make install-frontend [BUILDROOT=path] [PREFIX=path] [CONFIG_DIR=path]"
+	@echo "  make create-build-artifacts  # 创建RPM打包所需的构建产物"
 	@echo ""
 	@echo "参数说明:"
 	@echo "  BUILDROOT: 构建根目录 (默认为空)"
@@ -28,6 +33,7 @@ help:
 	@echo "  make install BUILDROOT=/tmp/build PREFIX=/usr/local"
 	@echo "  make install CONFIG_DIR=/opt/trustee/config"
 	@echo "  make install-frontend  # 安装前端组件"
+	@echo "  make create-build-artifacts  # 创建RPM构建产物"
 
 # 编译目标
 build:
@@ -117,4 +123,46 @@ install-frontend:
 	
 	@echo "前端安装完成"
 
-.PHONY: help install build build-frontend install-frontend 
+# Create build artifacts for RPM packaging
+create-build-artifacts:
+	@echo "Creating build artifacts for RPM packaging..."
+	@echo "  Version: $(VERSION)"
+	
+	# Create Source0: Main source tarball
+	@echo "  Creating main source tarball..."
+	mkdir -p /tmp/trustee-$(VERSION) && cp -r ../* /tmp/trustee-$(VERSION)/ && \
+	(cd /tmp && tar --exclude='trustee-$(VERSION)/target' --exclude='trustee-$(VERSION)/.git' \
+	--exclude='trustee-$(VERSION)/dist/vendor.tar.gz' --exclude='trustee-$(VERSION)/dist/go-vendor.tar.gz' \
+	--exclude='trustee-$(VERSION)/dist/frontend_node_modules.tar.gz' --exclude='trustee-$(VERSION)/frontend/node_modules' \
+	--exclude='trustee-$(VERSION)/trustee-gateway/vendor' --exclude='trustee-$(VERSION)/.gitignore' \
+	--exclude='trustee-$(VERSION)/*.tar.gz' -czf /tmp/trustee-$(VERSION).tar.gz trustee-$(VERSION)) && \
+	mv /tmp/trustee-$(VERSION).tar.gz . && rm -rf /tmp/trustee-$(VERSION)
+	
+	# Create Source1: Rust vendor tarball
+	@echo "  Creating Rust vendor tarball..."
+	cd .. && cargo vendor vendor | grep -v "^To use" > /dev/null && tar -czf dist/vendor.tar.gz vendor
+	
+	# Source2: config.toml (create tarball from rpm/AnolisOS23/deps/config.toml)
+	@echo "  Creating config.toml tarball..."
+	cd .. && tar -czf dist/config.toml.tar.gz -C rpm/AnolisOS23/deps config.toml
+	
+	# Create Source3: Go vendor tarball for trustee-gateway
+	@echo "  Creating Go vendor tarball..."
+	cd ../trustee-gateway && go mod vendor && cd .. && tar -czf dist/go-vendor.tar.gz -C trustee-gateway vendor
+	
+	# Create Source4: Frontend node_modules tarball
+	@echo "  Creating frontend node_modules tarball..."
+	cd ../frontend && npm ci --production=false && cd .. && tar -czf dist/frontend_node_modules.tar.gz -C frontend node_modules
+	
+	# Create Source5: Dependency RPMs tarball
+	@echo "  Creating dependency RPMs tarball..."
+	cd .. && tar -czf dist/rpms.tar.gz -C rpm/AnolisOS23/deps rpms 2>/dev/null || echo "  No RPM files found in deps/rpms"
+	
+	@echo "Build artifacts created successfully:"
+	@echo "  - trustee-$(VERSION).tar.gz (Source0)"
+	@echo "  - vendor.tar.gz (Source1)"
+	@echo "  - config.toml.tar.gz (Source2)"
+	@echo "  - go-vendor.tar.gz (Source3)"
+	@echo "  - frontend_node_modules.tar.gz (Source4)"
+	@echo "  - rpms.tar.gz (Source5)"
+.PHONY: help install build build-frontend install-frontend create-build-artifacts
