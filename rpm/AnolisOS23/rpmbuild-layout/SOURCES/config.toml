@@ -1,0 +1,32 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/inclavare-containers/canon-json-rs"]
+git = "https://github.com/inclavare-containers/canon-json-rs"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/inclavare-containers/kbs-types.git?rev=5c029c9"]
+git = "https://github.com/inclavare-containers/kbs-types.git"
+rev = "5c029c9"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/intel/SGXDataCenterAttestationPrimitives?tag=DCAP_1.21"]
+git = "https://github.com/intel/SGXDataCenterAttestationPrimitives"
+tag = "DCAP_1.21"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/openanolis/csv-rs?rev=b67a07e"]
+git = "https://github.com/openanolis/csv-rs"
+rev = "b67a07e"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/veraison/rust-apiclient?rev=fe149cd"]
+git = "https://github.com/veraison/rust-apiclient"
+rev = "fe149cd"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+
+[net]
+git-fetch-with-cli = true

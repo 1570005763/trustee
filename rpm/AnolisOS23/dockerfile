@@ -1,0 +1,28 @@
+# Builder Dockerfile
+FROM openanolis/anolisos:23
+
+# 安装最小构建依赖（根据你的项目调整）
+RUN dnf install -y \
+    anolis-epao-release \
+    rpm-build \
+    rpmdevtools \
+    gzip \
+    tar \
+    wget \
+    # gcc \
+    # make \
+    # cargo \
+    # rust \
+    # golang \
+    # npm \
+    && dnf clean all
+
+# 复制构建脚本
+COPY build-in-docker.sh /usr/local/bin/build-rpm.sh
+RUN chmod +x /usr/local/bin/build-rpm.sh
+
+# 默认工作目录
+WORKDIR /input
+
+# 入口：接受 tarball 名称作为参数
+ENTRYPOINT ["/usr/local/bin/build-rpm.sh"]
